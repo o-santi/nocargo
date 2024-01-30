@@ -2,7 +2,7 @@ source $stdenv/setup
 source $builderCommon
 shopt -s nullglob
 
-preInstallPhases+="runPhase "
+preInstallPhases+="runBuildScriptPhase "
 
 buildFlagsArray+=( -Cmetadata="$rustcMeta" )
 
@@ -20,7 +20,9 @@ configurePhase() {
         exit 0
     fi
 
-    edition="$(jq --raw-output '.package.edition // ""' "$cargoTomlJson")"
+    if [[ -z "$edition" ]]; then
+        edition="$(jq --raw-output '.package.edition // .lib.edition // ""' "$cargoTomlJson")"
+    fi
     if [[ -n "$edition" ]]; then
         buildFlagsArray+=(--edition="$edition")
     fi
@@ -54,8 +56,8 @@ buildPhase() {
     runHook postBuild
 }
 
-runPhase() {
-    runHook preRun
+runBuildScriptPhase() {
+    runHook preRunBuildScript
 
     export CARGO_MANIFEST_DIR="$(pwd)"
     if [[ -n "$links" ]]; then
@@ -92,7 +94,7 @@ runPhase() {
     stdoutFile="$out/rust-support/build-stdout"
     "$out/bin/build_script_build" | tee "$stdoutFile"
 
-    runHook postRun
+    runHook postRunBuildScript
 }
 
 installPhase() {
