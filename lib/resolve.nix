@@ -207,13 +207,7 @@ in rec {
   #   };
   #   ...
   # }
-  enableFeature = {
-    pkgSet, # Follows the output of `resolveDepsFromLock`.
-      pkgId, # pkgId of the dependency of the feature that is being enabled
-      feat-name, # feature name
-      kind, # build kind: normal, dev, build
-      seen # to avoid cyclic references entering infinite loops
-  }:
+  enableFeature = { pkgSet, pkgId, feat-name, kind, seen }:
     let
       feature = parse-feature feat-name;
     in
@@ -287,11 +281,11 @@ in rec {
           inherit pkgSet pkgId kind seen;
           feat-name = dep-name;
         };
-        enable-dependency = if !weak && dep.optional then
+        enable-dependency = if dep.optional then
           enableDependency {
             inherit pkgSet pkgId dep-name kind;
-            seen = enable-feature-with-dep-name-on-pkg;
-          } else enable-feature-with-dep-name-on-pkg;
+            seen = if !weak then enable-feature-with-dep-name-on-pkg else seen;
+          } else seen;
       in
         if weak && !(lib.attrByPath [dep.kind dep.resolved "enabled"] false seen) && dep.optional then
           defer-feature
@@ -419,33 +413,33 @@ in rec {
     simple6 = testUpdate { a = []; b = []; } [ "a" "b" "a" ] [ "a" "b" ];
 
   } // (let defs = { a = []; b = [ "a" ]; }; in {
-              link1 = testUpdate defs [ "a" ] [ "a" ];
-              link2 = testUpdate defs [ "b" "a" ] [ "a" "b" ];
-              link3 = testUpdate defs [ "b" ] [ "a" "b" ];
-              link4 = testUpdate defs [ "b" "a" ] [ "a" "b" ];
-              link5 = testUpdate defs [ "b" "b" ] [ "a" "b" ];
+    link1 = testUpdate defs [ "a" ] [ "a" ];
+    link2 = testUpdate defs [ "b" "a" ] [ "a" "b" ];
+    link3 = testUpdate defs [ "b" ] [ "a" "b" ];
+    link4 = testUpdate defs [ "b" "a" ] [ "a" "b" ];
+    link5 = testUpdate defs [ "b" "b" ] [ "a" "b" ];
 
-            }) // (let defs = { a = []; b = [ "a" ]; c = [ "a" ]; }; in {
-                         common1 = testUpdate defs [ "a" ] [ "a" ];
-                         common2 = testUpdate defs [ "b" ] [ "a" "b" ];
-                         common3 = testUpdate defs [ "a" "b" ] [ "a" "b" ];
-                         common4 = testUpdate defs [ "b" "a" ] [ "a" "b" ];
-                         common5 = testUpdate defs [ "b" "c" ] [ "a" "b" "c" ];
-                         common6 = testUpdate defs [ "a" "b" "c" ] [ "a" "b" "c" ];
-                         common7 = testUpdate defs [ "b" "c" "b" ] [ "a" "b" "c" ];
+  }) // (let defs = { a = []; b = [ "a" ]; c = [ "a" ]; }; in {
+    common1 = testUpdate defs [ "a" ] [ "a" ];
+    common2 = testUpdate defs [ "b" ] [ "a" "b" ];
+    common3 = testUpdate defs [ "a" "b" ] [ "a" "b" ];
+    common4 = testUpdate defs [ "b" "a" ] [ "a" "b" ];
+    common5 = testUpdate defs [ "b" "c" ] [ "a" "b" "c" ];
+    common6 = testUpdate defs [ "a" "b" "c" ] [ "a" "b" "c" ];
+    common7 = testUpdate defs [ "b" "c" "b" ] [ "a" "b" "c" ];
 
-                       }) // (let defs = { a = [ "b" "c" ]; b = [ "d" "e" ]; c = [ "f" "g"]; d = []; e = []; f = []; g = []; }; in {
-                                    tree1 = testUpdate defs [ "a" ] [ "a" "b" "c" "d" "e" "f" "g" ];
-                                    tree2 = testUpdate defs [ "b" ] [ "b" "d" "e" ];
-                                    tree3 = testUpdate defs [ "d" ] [ "d" ];
-                                    tree4 = testUpdate defs [ "d" "b" "g" ] [ "b" "d" "e" "g" ];
-                                    tree5 = testUpdate defs [ "c" "e" "f" ] [ "c" "e" "f" "g" ];
+  }) // (let defs = { a = [ "b" "c" ]; b = [ "d" "e" ]; c = [ "f" "g"]; d = []; e = []; f = []; g = []; }; in {
+    tree1 = testUpdate defs [ "a" ] [ "a" "b" "c" "d" "e" "f" "g" ];
+    tree2 = testUpdate defs [ "b" ] [ "b" "d" "e" ];
+    tree3 = testUpdate defs [ "d" ] [ "d" ];
+    tree4 = testUpdate defs [ "d" "b" "g" ] [ "b" "d" "e" "g" ];
+    tree5 = testUpdate defs [ "c" "e" "f" ] [ "c" "e" "f" "g" ];
 
-                                  }) // (let defs = { a = [ "b" ]; b = [ "c" ]; c = [ "b" ]; }; in {
-                                               cycle1 = testUpdate defs [ "b" ] [ "b" "c" ];
-                                               cycle2 = testUpdate defs [ "c" ] [ "b" "c" ];
-                                               cycle3 = testUpdate defs [ "a" ] [ "a" "b" "c" ];
-                                             });
+  }) // (let defs = { a = [ "b" ]; b = [ "c" ]; c = [ "b" ]; }; in {
+    cycle1 = testUpdate defs [ "b" ] [ "b" "c" ];
+    cycle2 = testUpdate defs [ "c" ] [ "b" "c" ];
+    cycle3 = testUpdate defs [ "a" ] [ "a" "b" "c" ];
+  });
 
   resolve-feature-tests = { assertEq, ... }: let
     test = pkgSet: rootId: rootFeatures: expect: let
