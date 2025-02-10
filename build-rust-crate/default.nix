@@ -133,8 +133,8 @@ let
 
     linksDependencies = map (dep: dep.drv.buildDrv) linksDependencies;
 
-    HOST = rust.toRustTarget stdenv.buildPlatform;
-    TARGET = rust.toRustTarget stdenv.hostPlatform;
+    HOST = stdenv.buildPlatform.rust.rustcTarget;
+    TARGET = stdenv.hostPlatform.rust.rustcTarget;
 
     # This drv links for `build_script_build`.
     # So include transitively propagated upstream `-sys` crates' ld dependencies.
