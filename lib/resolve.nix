@@ -500,8 +500,8 @@ in rec {
     };
 
     merge = test pkgSet2 "my-id" [ "default" ] {
-      my-id = [ "default" "tokio" ];
-      dep-id = [ "default" "tokio"];
+      my-id = [ "default" ];
+      dep-id = [ "default" ];
       tokio-id = [ "fs" "sync" "macros" ];
     };
   };
