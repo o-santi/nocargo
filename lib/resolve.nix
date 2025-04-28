@@ -196,7 +196,7 @@ in rec {
     };
     key-type = {
       features = attrset;
-      attr-name = attrset;
+      deferred = attrset;
       enabled = bool;
     };
   in changes:
