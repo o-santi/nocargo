@@ -24,7 +24,7 @@ in rec {
   # }
   #
   # Currently (rust 1.63.0), there are 3 versions of the lock file.
-  # We supports V1, V2 and V3.
+  # We support V1, V2 and V3.
   # See:
   # https://github.com/rust-lang/cargo/blob/rust-1.63.0/src/cargo/core/resolver/resolve.rs#L56
   # https://github.com/rust-lang/cargo/blob/rust-1.63.0/src/cargo/core/resolver/encode.rs
