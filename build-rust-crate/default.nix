@@ -97,6 +97,9 @@ let
 
     inherit capLints;
 
+    # disable check for broken symlinks on newer nixpkgs
+    dontCheckForBrokenSymlinks = true;
+
     RUSTC = "${rustc}/bin/rustc";
   } // removeAttrs args [
     "pname"
