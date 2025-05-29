@@ -1,9 +1,13 @@
-{ lib, ... }:
+{ lib, self, ... }:
 let
-  inherit (builtins) readFile readDir fromJSON fromTOML toString attrNames match;
+  inherit (builtins)
+    readFile readDir fromJSON fromTOML toString attrNames match typeOf
+    pathExists split tryEval;
   inherit (lib)
     stringLength splitString replaceStrings substring isString toLower
-    filter listToAttrs mapAttrs mapAttrsToList optionalAttrs warnIf;
+    filter listToAttrs mapAttrs mapAttrsToList optionalAttrs warnIf subtractLists
+    hasPrefix concatStringsSep flatten;
+  inherit (self.glob) globMatchDir;
 in
 rec {
   toPkgId = { name, version, source ? null, ... }:
@@ -126,6 +130,19 @@ rec {
       };
     };
 
+  sanitizeRelativePath = path:
+    if hasPrefix "/" path then
+      throw "Absolute path is not allowed: ${path}"
+    else
+      concatStringsSep "/"
+        (filter
+          (s:
+            isString s && s != "" && s != "." &&
+            (if match ''.*[[?*].*|\.\.'' s != null then throw ''
+              Globing and `..` are not allowed: ${path}
+            '' else true))
+          (split ''[\/]'' path));
+
   # Sanitize a dependency reference.
   # Handling `package` and fill missing fields.
   sanitizeDep =
@@ -156,6 +173,39 @@ rec {
     } // optionalAttrs (args.package or null != null) {
       rename = replaceStrings ["-"] ["_"] name;
     };
+
+  mkPkgOrWorkspaceInfoFromCargoToml = { src }: let
+    lockVersion = (fromTOML (readFile (src + "/Cargo.lock"))).version or 2;
+    manifest = fromTOML (readFile (src + "/Cargo.toml"));
+    # We don't distinguish between v1 and v2. But v3 is different from both.
+  in
+    if manifest ? workspace then
+      mkWorkspaceInfoFromCargoToml { inherit src manifest lockVersion; }
+    else {
+      ${toPkgId manifest.package} = mkPkgInfoFromCargoToml (manifest // { inherit lockVersion; }) src {};
+    };
+
+  mkWorkspaceInfoFromCargoToml = { src, manifest, lockVersion }: let
+    selected = flatten (map (glob: globMatchDir glob src) (manifest.workspace.members or []));
+    excluded = map sanitizeRelativePath (manifest.workspace.exclude or []);
+    members = subtractLists excluded selected;
+
+    root_package = if manifest ? package then [ "" ] else [];
+    maybe-crates = lib.attrNames (lib.filterAttrs (path: type: type == "directory") (readDir src));
+    is-directory-crate = relativePath: pathExists (src + ("/" + (relativePath + "/Cargo.toml")));
+
+    valid-local-crates = filter is-directory-crate (members ++ root_package ++ maybe-crates);
+  in
+    listToAttrs
+      (map (relativePath: let
+        memberSrc =  src + ("/" + relativePath);
+        memberRoot = if relativePath == "" then memberSrc else self.nix-filter.lib { root = memberSrc; };
+        memberManifest = fromTOML (readFile (memberSrc + "/Cargo.toml"));
+      in {
+        name = toPkgId memberManifest.package;
+        value = mkPkgInfoFromCargoToml (memberManifest // { inherit lockVersion; }) memberRoot manifest.workspace;
+      }) valid-local-crates);
+
 
   # Build a simplified crate into from a parsed Cargo.toml.
   mkPkgInfoFromCargoToml = { lockVersion ? 3, package, features ? {}, target ? {}, ... }@args: src: main-workspace: let
@@ -203,36 +253,36 @@ rec {
           rename = replaceStrings ["-"] ["_"] name;
         });
 
-    collectTargetDeps = target: { dependencies ? {}, dev-dependencies ? {}, build-dependencies ? {}, ... }:
-      # per https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html#inheriting-a-dependency-from-a-workspace
-      let inherit-dep-from-ws = dep_name: info:
-            if info ? "workspace" && info.workspace then
-              let ws-dep = main-workspace.dependencies.${dep_name}; in
-              if builtins.typeOf ws-dep == "string" then
-                { version = ws-dep; } // { optional = info.optional or false; features = info.features or []; }
-              else if builtins.typeOf ws-dep == "set" then
-                ws-dep // { optional = info.optional or false; features = ws-dep.features or [] ++ info.features or []; }
-              else
-                throw "Unrecognized dep type ${dep_name}"
-            else info;
+    # per https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html#inheriting-a-dependency-from-a-workspace
+    collectTargetDeps = target: { dependencies ? {}, dev-dependencies ? {}, build-dependencies ? {}, ... }: let
+      inherit-dep-from-ws = dep_name: info:
+        if info ? workspace && info.workspace then let
+          ws-dep = main-workspace.dependencies.${dep_name};
+        in
+          if typeOf ws-dep == "string" then
+            { version = ws-dep; } // { optional = info.optional or false; features = info.features or []; }
+          else if typeOf ws-dep == "set" then
+            ws-dep // { optional = info.optional or false; features = ws-dep.features or [] ++ info.features or []; }
+          else
+            throw "Unrecognized dep type ${dep_name}"
+        else info;
       in
         transDeps target "normal" (mapAttrs inherit-dep-from-ws dependencies) ++
         transDeps target "dev" (mapAttrs inherit-dep-from-ws dev-dependencies) ++
         transDeps target "build" (mapAttrs inherit-dep-from-ws build-dependencies);
     inherit-package-from-workspace = name: info:
-      if builtins.typeOf info == "set" && info ? "workspace" && info.workspace then
+      if typeOf info == "set" && info ? workspace && info.workspace then
         main-workspace.package.${name}
       else
         info;
-  in
-    {
-      inherit src features;
-      links = package.links or null;
-      procMacro = args.lib.proc-macro or false;
-      dependencies =
-        collectTargetDeps null args ++
+  in {
+    inherit src features;
+    links = package.links or null;
+    procMacro = args.lib.proc-macro or false;
+    dependencies =
+      collectTargetDeps null args ++
         (lib.lists.flatten (mapAttrsToList collectTargetDeps target));
-    } // (mapAttrs inherit-package-from-workspace package);
+  } // (mapAttrs inherit-package-from-workspace package);
 
   pkg-info-from-toml-tests = { assertEq, ... }: {
     simple = let
@@ -293,4 +343,24 @@ rec {
       in
         assertEq info expected;
   };
+
+  sanitize-relative-path-tests = { assertEq, ... }: let
+    assertOk = raw: expect: assertEq (tryEval (sanitizeRelativePath raw)) { success = true; value = expect; };
+    assertInvalid = raw: assertEq (tryEval (sanitizeRelativePath raw)) { success = false; value = false; };
+  in
+  {
+    empty = assertOk "" "";
+    simple1 = assertOk "foo" "foo";
+    simple2 = assertOk "foo/bar" "foo/bar";
+    dot1 = assertOk "." "";
+    dot2 = assertOk "./././" "";
+    dot3 = assertOk "./foo/./bar/" "foo/bar";
+
+    dotdot1 = assertInvalid "..";
+    dotdot2 = assertInvalid "./foo/..";
+    dotdot3 = assertInvalid "../bar";
+    root1 = assertInvalid "/";
+    root2 = assertInvalid "/foo";
+  };
+
 }

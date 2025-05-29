@@ -106,8 +106,8 @@
             _0003-cfg-eval = target-cfg.cfg-eval-tests;
             _0004-platform-cfg = target-cfg.platform-cfg-tests;
             _0005-glob = glob.glob-tests;
-            _0006-sanitize-relative-path = support.sanitize-relative-path-tests;
-
+            
+            _0006-sanitize-relative-path = pkg-info.sanitize-relative-path-tests;
             _0100-pkg-info-from-toml = pkg-info.pkg-info-from-toml-tests;
             _0101-preprocess-feature = resolve.preprocess-feature-tests;
             _0102-update-feature = resolve.update-feature-tests;

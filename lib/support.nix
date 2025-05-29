@@ -1,15 +1,13 @@
 { lib, self }:
 let
-  inherit (builtins) fromTOML toJSON match tryEval split;
+  inherit (builtins) fromTOML match;
   inherit (lib)
     readFile mapAttrs mapAttrs' makeOverridable warnIf
-    isString hasPrefix
-    filter flatten elem elemAt listToAttrs subtractLists concatStringsSep
+    filter elem elemAt
     attrNames attrValues recursiveUpdate optionalAttrs;
-  inherit (self.pkg-info) mkPkgInfoFromCargoToml getPkgInfoFromIndex toPkgId;
+  inherit (self.pkg-info) mkPkgOrWorkspaceInfoFromCargoToml getPkgInfoFromIndex toPkgId;
   inherit (self.resolve) resolveDepsFromLock resolveFeatures;
   inherit (self.target-cfg) platformToCfgs evalTargetCfgStr;
-  inherit (self.glob) globMatchDir;
 in
 rec {
 
@@ -86,47 +84,21 @@ rec {
     , extraRegistries ? {} # : Attrset Registry
     , registries ? defaultRegistries // extraRegistries
 
-    , rustc ? pkgsBuildHost.rustc
-    , stdenv ? default.stdenv
-    }:
-    let
+      , rustc ? pkgsBuildHost.rustc
+      , stdenv ? default.stdenv
+    }: let
       manifest = fromTOML (readFile (src + "/Cargo.toml"));
-
       profiles = profilesFromManifest manifest;
-
-      selected = flatten (map (glob: globMatchDir glob src) manifest.workspace.members);
-      excluded = map sanitizeRelativePath (manifest.workspace.exclude or []);
-      members = subtractLists excluded selected;
-
       lockSrc = if lockPath == null then (src + "/Cargo.lock") else lockPath;
       lock = fromTOML (readFile lockSrc);
-      # We don't distinguish between v1 and v2. But v3 is different from both.
-      lockVersionSet = { lockVersion = lock.version or 2; };
-
-      localSrcInfos =
-        let
-          workspace_members = (if manifest ? workspace then members else []);
-          root_package = (if manifest ? package then [ "" ] else []);
-          main-workspace = if manifest ? "workspace" then manifest.workspace else {};
-          maybe-crates = lib.attrNames (lib.filterAttrs (path: type: type == "directory") (builtins.readDir src));
-          is-directory-crate = relativePath: builtins.pathExists (src + ("/" + (relativePath + "/Cargo.toml")));
-        in
-          listToAttrs
-            (map (relativePath:
-              let
-                memberSrc =  src + ("/" + relativePath);
-                memberRoot = if relativePath == "" then memberSrc else self.nix-filter.lib { root = memberSrc; };
-                memberManifest = fromTOML (readFile (memberSrc + "/Cargo.toml")) // lockVersionSet;
-              in {
-                name = toPkgId memberManifest.package;
-                value = mkPkgInfoFromCargoToml memberManifest memberRoot main-workspace;
-              }) (filter is-directory-crate (workspace_members ++ root_package ++ maybe-crates)));
-
+      localSrcInfos = mkPkgOrWorkspaceInfoFromCargoToml {
+        inherit src;
+      };
     in mkRustPackageSet {
       gitSrcInfos = mapAttrs (url: src:
-        mkPkgInfoFromCargoToml (fromTOML (readFile (src + "/Cargo.toml")) // lockVersionSet) src {}
+        mkPkgOrWorkspaceInfoFromCargoToml { inherit src; }
       ) gitSrcs;
-
+        
       inherit lock profiles localSrcInfos buildRustCrate buildCrateOverrides registries rustc stdenv;
     };
 
@@ -134,7 +106,7 @@ rec {
   mkRustPackageSet =
     { lock # : <fromTOML>
     , localSrcInfos # : Attrset PkgInfo
-    , gitSrcInfos # : Attrset PkgInfo
+    , gitSrcInfos # : Attrset (AttrSet PkgInfo)
     , profiles # : Attrset Profile
     , buildCrateOverrides # : Attrset (Attrset _)
     , buildRustCrate # : Attrset -> Derivation
@@ -165,8 +137,8 @@ rec {
             args
           // { inherit source; } # `source` is for crate id, which is used for overrides.
         else if kind == "git" then
-          gitSrcInfos.${url}
-            or (throw "Git source `${url}` not found. Please define it in `gitSrcs`.")
+          gitSrcInfos.${url}.${name}
+            or (throw "Git package `${name}` was not found in source `${url}`. Please define it in `gitSrcs`.")
         else
           throw "Invalid source: ${source}";
 
@@ -220,7 +192,7 @@ rec {
             inherit rootId pkgSet rootFeatures;
           };
 
-          buildDependencies = (resolvedFeatures.normal // resolvedFeatures.build);
+          buildDependencies = resolvedFeatures.normal // resolvedFeatures.build;
           normalDependencies = resolvedFeatures.normal;
           
           pkgsBuild = mapAttrs (id: features: let info = pkgSet.${id}; in
@@ -253,26 +225,13 @@ rec {
         features = null;
       };
 
-    in
+    in 
       mapAttrs (_: profile:
         mapAttrs' (pkgId: pkgInfo: {
           name = pkgInfo.name;
           value = mkPkg profile pkgId;
         }) localSrcInfos
       ) profiles;
-
-  sanitizeRelativePath = path:
-    if hasPrefix "/" path then
-      throw "Absolute path is not allowed: ${path}"
-    else
-      concatStringsSep "/"
-        (filter
-          (s:
-            isString s && s != "" && s != "." &&
-            (if match ''.*[[?*].*|\.\.'' s != null then throw ''
-              Globing and `..` are not allowed: ${path}
-            '' else true))
-          (split ''[\/]'' path));
 
   build-from-src-dry-tests = { assertEq, pkgs, defaultRegistries, ... }: let
     inherit (builtins) head listToAttrs;
@@ -356,22 +315,4 @@ rec {
       assertEq [ libz.links libz'.links ] [ "z" "z" ];
   };
 
-  sanitize-relative-path-tests = { assertEq, ... }: let
-    assertOk = raw: expect: assertEq (tryEval (sanitizeRelativePath raw)) { success = true; value = expect; };
-    assertInvalid = raw: assertEq (tryEval (sanitizeRelativePath raw)) { success = false; value = false; };
-  in
-  {
-    empty = assertOk "" "";
-    simple1 = assertOk "foo" "foo";
-    simple2 = assertOk "foo/bar" "foo/bar";
-    dot1 = assertOk "." "";
-    dot2 = assertOk "./././" "";
-    dot3 = assertOk "./foo/./bar/" "foo/bar";
-
-    dotdot1 = assertInvalid "..";
-    dotdot2 = assertInvalid "./foo/..";
-    dotdot3 = assertInvalid "../bar";
-    root1 = assertInvalid "/";
-    root2 = assertInvalid "/foo";
-  };
 }
